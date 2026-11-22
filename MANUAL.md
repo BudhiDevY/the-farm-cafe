@@ -10,9 +10,9 @@ Welcome to **The Farm Cafe** digital ordering and table reservation system.
 ---
 
 ## 2. Managing Live Orders (`Counter` & `Chef / Kitchen`)
-1. Open `admin.html` on the counter tablet/laptop and enter your **Staff PIN**.
+1. Open `admin.html` on the counter tablet/laptop and enter your **Staff PIN**. *(Once unlocked, the portal stays active even if you refresh the page, so staff won't need to re-enter the PIN during shifts).*
 2. **Counter Tab:**
-   - New customer orders (`Dine-in`, `Kerbside Pickup`, or `Delivery`) appear here automatically.
+   - New customer orders (`Dine-in`, `Kerbside Pickup`, or `Delivery`) appear here automatically with an in-page notification banner at the top of the screen—no manual refresh required.
    - Click **Send to Chef** to forward the ticket to the kitchen screen.
    - *(Tip: Uncheck **"Forward orders from Counter to Chef/Kitchen"** at the top if a single person handles both counter and kitchen).*
 3. **Chef / Kitchen Tab:**
@@ -40,7 +40,9 @@ Welcome to **The Farm Cafe** digital ordering and table reservation system.
 
 ---
 
-## 5. Changing Your Staff PIN
-1. Click **Change PIN** in the top navigation bar of `admin.html`.
-2. Enter your **Current PIN** and your **New PIN** (4 or more digits).
-3. Click **Save PIN**—the new PIN syncs immediately across all staff devices.
+## 5. Portal Security & Staff PIN (`Lock` & `Change PIN`)
+- **Locking the Portal:** Click **Lock** in the top navigation bar whenever stepping away from the counter or at closing time. This immediately locks the screen and requires the Staff PIN again before anyone can view orders or edit the menu.
+- **Changing Your Staff PIN:**
+  1. Click **Change PIN** in the top navigation bar of `admin.html`.
+  2. Enter your **Current PIN** and your **New PIN** (4 or more digits).
+  3. Click **Save PIN**—the new PIN syncs immediately across all staff devices.
