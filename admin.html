@@ -75,6 +75,9 @@
                 <button type="button" onclick="toggleChangePinBox()" class="px-3 py-1.5 rounded-full text-xs border border-white/30 text-white/90 hover:bg-white hover:text-forest">
                     Change PIN
                 </button>
+                <button type="button" onclick="lockAdmin()" class="px-3 py-1.5 rounded-full text-xs border border-white/30 text-white/90 hover:bg-white hover:text-forest">
+                    Lock
+                </button>
             </div>
         </div>
     </header>
@@ -90,7 +93,7 @@
         </div>
     </div>
 
-    <div id="change-pin-box" class="hidden bg-white border border-stone-200 rounded-xl p-4 shadow-sm max-w-md space-y-3">
+    <div id="change-pin-box" class="hidden bg-white border border-stone-200 rounded-xl p-4 shadow-sm max-w-md space-y-3 mx-auto mt-4">
         <h3 class="font-serif text-base font-bold text-forest">Change Staff PIN</h3>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <input id="current-pin-input" type="password" inputmode="numeric" placeholder="Current PIN" class="border border-stone-300 rounded px-3 py-2 text-sm">
@@ -102,13 +105,21 @@
                 Save PIN
             </button>
             <button type="button" onclick="toggleChangePinBox()" class="border border-stone-300 px-3 py-2 rounded text-xs font-bold uppercase">
-            Cancel
+                Cancel
             </button>
         </div>
     </div>
 
     <!-- MAIN CONTENT -->
     <main class="max-w-5xl w-full mx-auto p-4 sm:p-6 flex-1 space-y-4">
+        <!-- IN-PAGE NEW ORDER MESSAGE -->
+        <div id="new-order-banner" class="hidden px-4 py-3 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-950 flex items-center justify-between gap-3 shadow-sm">
+            <span id="new-order-message" class="text-sm font-semibold"></span>
+            <button type="button" onclick="document.getElementById('new-order-banner').classList.add('hidden')" class="text-xs font-bold uppercase tracking-wider text-emerald-800 hover:underline shrink-0">
+                Dismiss
+            </button>
+        </div>
+
         <div id="staff-content-area" class="space-y-4"></div>
     </main>
 
@@ -173,13 +184,14 @@
         const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         const PIN_STORAGE_KEY = 'farm_cafe_admin_pin';
+        const SESSION_UNLOCK_KEY = 'farm_cafe_admin_unlocked';
         const DEFAULT_MENU_COUNT = 26;
 
         let cachedPin = localStorage.getItem(PIN_STORAGE_KEY) || '2026';
-
-        function getAdminPin() {
-            return cachedPin;
-        }
+        let knownOrderIds = new Set();
+        let hasInitializedOrders = false;
+        let liveSyncTimer = null;
+        let ordersRealtimeChannel = null;
 
         async function syncPinFromDb() {
             const { data, error } = await sb
@@ -203,6 +215,51 @@
             customMenu: []
         };
 
+        function normalizeOrderRow(o) {
+            return {
+                ...o,
+                status: o.status || 'NEW',
+                total: Number(o.total ?? 0),
+                items: Array.isArray(o.items) ? o.items : [],
+                customer: o.customer || {
+                    name: o.customer_name || 'Guest',
+                    phone: o.customer_phone || '',
+                    zone: o.zone || ''
+                }
+            };
+        }
+
+        function showNewOrderMessage(order) {
+            const banner = document.getElementById('new-order-banner');
+            const msg = document.getElementById('new-order-message');
+            if (!banner || !msg) return;
+
+            const code = String(order.id ?? '').slice(-4) || 'NEW';
+            const customerName = order.customer_name || order.customer?.name || 'Customer';
+            const zoneOrService = order.zone || order.customer?.zone || order.service || 'Order';
+            const total = Number(order.total || 0).toLocaleString('en-IN');
+
+            msg.textContent = `New order #${code} from ${customerName} (${zoneOrService}) — ₹${total}`;
+            banner.classList.remove('hidden');
+        }
+
+        function detectAndNotifyNewOrders(rows) {
+            if (!Array.isArray(rows)) return;
+
+            if (!hasInitializedOrders) {
+                rows.forEach(r => knownOrderIds.add(Number(r.id)));
+                hasInitializedOrders = true;
+                return;
+            }
+
+            const incoming = rows.filter(r => !knownOrderIds.has(Number(r.id)));
+            rows.forEach(r => knownOrderIds.add(Number(r.id)));
+
+            if (incoming.length > 0 && document.getElementById('pin-gate').classList.contains('hidden')) {
+                showNewOrderMessage(incoming[incoming.length - 1]);
+            }
+        }
+
         async function loadBackendData() {
             const [ordersRes, bookingsRes, menuRes] = await Promise.all([
                 sb.from('orders').select('*'),
@@ -211,19 +268,10 @@
             ]);
 
             if (!ordersRes.error && ordersRes.data) {
-                state.orders = ordersRes.data
-                    .sort((a, b) => Number(a.id) - Number(b.id))
-                    .map(o => ({
-                        ...o,
-                        status: o.status || 'NEW',
-                        total: o.total ?? 0,
-                        items: Array.isArray(o.items) ? o.items : [],
-                        customer: o.customer || {
-                            name: o.customer_name || 'Guest',
-                            phone: o.customer_phone || '',
-                            zone: o.zone || ''
-                        }
-                    }));
+                const sorted = [...ordersRes.data].sort((a, b) => Number(a.id) - Number(b.id));
+                detectAndNotifyNewOrders(sorted);
+
+                state.orders = sorted.map(normalizeOrderRow);
                 localStorage.setItem('farm_cafe_orders', JSON.stringify(state.orders));
 
                 state.orders
@@ -250,9 +298,61 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            syncPinFromDb();
+        function startLiveUpdates() {
+            if (!liveSyncTimer) {
+                liveSyncTimer = setInterval(() => {
+                    const isLocked = !document.getElementById('pin-gate').classList.contains('hidden');
+                    if (!isLocked) {
+                        loadBackendData();
+                    }
+                }, 3000);
+            }
+
+            if (!ordersRealtimeChannel && typeof sb.channel === 'function') {
+                ordersRealtimeChannel = sb
+                    .channel('farm-cafe-orders-live')
+                    .on(
+                        'postgres_changes',
+                        { event: '*', schema: 'public', table: 'orders' },
+                        (payload) => {
+                            if (payload.eventType === 'INSERT' && payload.new) {
+                                const row = payload.new;
+                                const numId = Number(row.id);
+                                if (!knownOrderIds.has(numId)) {
+                                    knownOrderIds.add(numId);
+                                    if (document.getElementById('pin-gate').classList.contains('hidden')) {
+                                        showNewOrderMessage(row);
+                                    }
+                                }
+                            }
+                            if (document.getElementById('pin-gate').classList.contains('hidden')) {
+                                loadBackendData();
+                            }
+                        }
+                    )
+                    .subscribe();
+            }
+        }
+
+        function openDashboardSession() {
+            sessionStorage.setItem(SESSION_UNLOCK_KEY, 'true');
+            document.getElementById('pin-gate').classList.add('hidden');
+            document.getElementById('pin-error').classList.add('hidden');
             loadBackendData();
+            startLiveUpdates();
+        }
+
+        function lockAdmin() {
+            sessionStorage.removeItem(SESSION_UNLOCK_KEY);
+            document.getElementById('admin-pin-input').value = '';
+            document.getElementById('pin-gate').classList.remove('hidden');
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await syncPinFromDb();
+            if (sessionStorage.getItem(SESSION_UNLOCK_KEY) === 'true') {
+                openDashboardSession();
+            }
         });
 
         function toggleChangePinBox() {
@@ -308,9 +408,7 @@
             const currentPin = await syncPinFromDb();
 
             if (val === currentPin) {
-                document.getElementById('pin-gate').classList.add('hidden');
-                document.getElementById('pin-error').classList.add('hidden');
-                loadBackendData();
+                openDashboardSession();
             } else {
                 document.getElementById('pin-error').classList.remove('hidden');
             }
@@ -351,36 +449,9 @@
         }
 
         function refreshAll() {
-            state.orders = JSON.parse(localStorage.getItem('farm_cafe_orders') || '[]');
-            state.bookings = JSON.parse(localStorage.getItem('farm_cafe_bookings') || '[]');
-            state.customMenu = JSON.parse(localStorage.getItem('farm_cafe_custom_menu') || '[]');
-            renderStaffView(state.currentTab);
+            if (!document.getElementById('pin-gate').classList.contains('hidden')) return;
             loadBackendData();
         }
-
-        window.addEventListener('storage', (e) => {
-            if (['farm_cafe_orders', 'farm_cafe_bookings', 'farm_cafe_custom_menu'].includes(e.key)) {
-                if (!document.getElementById('pin-gate').classList.contains('hidden')) return;
-                refreshAll();
-            }
-        });
-
-        setInterval(() => {
-            const isLocked = !document.getElementById('pin-gate').classList.contains('hidden');
-            if (isLocked) return;
-
-            const latestBookings = localStorage.getItem('farm_cafe_bookings') || '[]';
-            const latestOrders = localStorage.getItem('farm_cafe_orders') || '[]';
-            const latestMenu = localStorage.getItem('farm_cafe_custom_menu') || '[]';
-
-            if (
-                latestBookings !== JSON.stringify(state.bookings) ||
-                latestOrders !== JSON.stringify(state.orders) ||
-                latestMenu !== JSON.stringify(state.customMenu)
-            ) {
-                refreshAll();
-            }
-        }, 2000);
 
         function getNextDishId() {
             const ids = state.customMenu.map(i => Number(i.id) || 0);
@@ -479,13 +550,13 @@
             renderStaffView('counter');
         }
 
-        const READY_DELETE_DELAY_MS = 2 * 60 * 1000; // 2 minutes (change as needed)
+        const READY_DELETE_DELAY_MS = 2 * 60 * 1000;
         const readyDeleteTimers = new Map();
 
         function scheduleReadyOrderDeletion(id) {
             const numericId = Number(id);
             if (readyDeleteTimers.has(numericId)) {
-                return; // Keep the original countdown running instead of resetting it on every refresh
+                return;
             }
 
             const timer = setTimeout(async () => {
